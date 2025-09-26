@@ -3,17 +3,16 @@ import paho.mqtt.client as mqtt
 import threading, os
 
 # --------------------------
-# Global safe log store
+# Global safe log store (thread-safe)
 # --------------------------
 log_buffer = []
+log_lock = threading.Lock()
 
 def log(msg: str):
-    """Thread-safe logging that won't crash Streamlit."""
+    """Thread-safe logging (only touches global buffer)."""
     global log_buffer
-    log_buffer.append(msg)
-    if "mqtt_logs" not in st.session_state:
-        st.session_state.mqtt_logs = []
-    st.session_state.mqtt_logs.append(msg)
+    with log_lock:
+        log_buffer.append(msg)
     print(msg)
 
 # --------------------------
@@ -40,20 +39,18 @@ if "config" not in st.session_state:
 # --------------------------
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
-        if "connected" in st.session_state:
-            st.session_state.connected = True
         log("✅ Connected to broker")
         topic = st.session_state.config["topic"]
         client.subscribe(topic)
         log(f"📡 Subscribed to topic: {topic}")
+        st.session_state.connected = True
     else:
         log(f"❌ Failed to connect. Return code: {rc} "
             "(5 = unauthorized / bad username or password)")
 
 def on_disconnect(client, userdata, rc):
-    if "connected" in st.session_state:
-        st.session_state.connected = False
     log("🔌 Disconnected from broker")
+    st.session_state.connected = False
 
 def on_message(client, userdata, msg):
     log(f"📥 Message received on {msg.topic}: {msg.payload.decode()}")
@@ -81,8 +78,6 @@ def start_mqtt(config):
         client.loop_forever()
     except Exception as e:
         log(f"💥 start_mqtt exception: {e}")
-        if "connected" in st.session_state:
-            st.session_state.connected = False
 
 def ensure_mqtt_running(config):
     if st.session_state.mqtt_client is None:
@@ -107,6 +102,14 @@ with st.sidebar:
 
     if st.button("Connect"):
         ensure_mqtt_running(st.session_state.config)
+
+# --------------------------
+# Sync global logs into session state
+# --------------------------
+with log_lock:
+    if log_buffer:
+        st.session_state.mqtt_logs.extend(log_buffer)
+        log_buffer.clear()
 
 # --------------------------
 # Status + Debug Log
