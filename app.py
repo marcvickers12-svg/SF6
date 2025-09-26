@@ -4,19 +4,13 @@ import ssl
 import threading
 import pandas as pd
 import plotly.graph_objects as go
+from queue import Queue
 
 # ------------------------------
-# Initialize session state
+# Thread-safe log queue
 # ------------------------------
-if "config" not in st.session_state:
-    st.session_state.config = {
-        "broker": "988df3573bd749bf8e37087a285287d0.s1.eu.hivemq.cloud",
-        "port": 8883,
-        "topic": "sf6/pressure",
-        "username": "",
-        "password": "",
-        "tls_cert": "baltimore.pem",
-    }
+if "log_queue" not in st.session_state:
+    st.session_state.log_queue = Queue()
 
 if "mqtt_logs" not in st.session_state:
     st.session_state.mqtt_logs = []
@@ -30,16 +24,35 @@ if "latest_value" not in st.session_state:
 if "history" not in st.session_state:
     st.session_state.history = pd.DataFrame(columns=["time", "value"])
 
-# Prevent Altair "empty dataframe" warnings
+if "config" not in st.session_state:
+    st.session_state.config = {
+        "broker": "988df3573bd749bf8e37087a285287d0.s1.eu.hivemq.cloud",
+        "port": 8883,
+        "topic": "sf6/pressure",
+        "username": "",
+        "password": "",
+        "tls_cert": "baltimore.pem",
+    }
+
+# Avoid Altair empty DF warnings
 if st.session_state.history.empty:
     st.session_state.history = pd.DataFrame([{"time": pd.Timestamp.now(), "value": 0.0}])
 
+
 # ------------------------------
-# Logging helper
+# Logging helper (thread safe)
 # ------------------------------
 def log(msg):
-    print(msg)
-    st.session_state.mqtt_logs.append(msg)
+    """Put log message in queue (safe for threads)."""
+    st.session_state.log_queue.put(msg)
+
+
+def flush_logs():
+    """Move logs from queue into session_state (main thread)."""
+    while not st.session_state.log_queue.empty():
+        msg = st.session_state.log_queue.get()
+        st.session_state.mqtt_logs.append(msg)
+
 
 # ------------------------------
 # MQTT Callbacks
@@ -52,6 +65,7 @@ def on_connect(client, userdata, flags, rc):
         log(f"📡 Subscribed to {userdata['topic']}")
     else:
         log(f"❌ Connection failed with code {rc}")
+
 
 def on_message(client, userdata, msg):
     try:
@@ -67,6 +81,7 @@ def on_message(client, userdata, msg):
         log(f"📥 Message received: {payload}")
     except Exception as e:
         log(f"⚠️ Error parsing message: {e}")
+
 
 # ------------------------------
 # MQTT Thread Function
@@ -98,6 +113,7 @@ def start_mqtt(config):
     except Exception as e:
         log(f"💥 start_mqtt exception: {type(e).__name__}: {e}")
 
+
 # ------------------------------
 # Sidebar: Broker Login Panel
 # ------------------------------
@@ -126,10 +142,14 @@ if st.sidebar.button("🔄 Reconnect"):
     threading.Thread(target=start_mqtt, args=(cfg_copy,), daemon=True).start()
     log("🚀 MQTT reconnect triggered")
 
+
 # ------------------------------
 # Main UI
 # ------------------------------
 st.title("SF₆ Gas Monitoring (HiveMQ Cloud Debug Mode)")
+
+# Flush logs from queue
+flush_logs()
 
 if st.session_state.connected:
     st.success("Connected to MQTT broker")
