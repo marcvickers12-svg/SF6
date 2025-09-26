@@ -27,51 +27,59 @@ if "config" not in st.session_state:
 
 # ---------- Logging Helper ----------
 def log(msg):
-    print(msg, file=sys.stderr)  # also print to Streamlit Cloud logs
+    print(msg, file=sys.stderr)  # goes to Streamlit console logs
     st.session_state.mqtt_logs.append(msg)
 
-# ---------- MQTT Handling ----------
+# ---------- MQTT Callbacks ----------
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
         st.session_state.connected = True
+        log("✅ on_connect: Connected successfully")
         client.subscribe(st.session_state.config["topic"])
-        log(f"✅ Connected and subscribed to {st.session_state.config['topic']}")
+        log(f"📡 Subscribed to {st.session_state.config['topic']}")
     else:
         st.session_state.connected = False
-        log(f"❌ Connection failed, return code {rc}")
+        log(f"❌ on_connect: Failed with return code {rc}")
+
+def on_disconnect(client, userdata, rc):
+    st.session_state.connected = False
+    log(f"⚡ on_disconnect: Disconnected with return code {rc}")
 
 def on_message(client, userdata, msg):
     try:
         value = float(msg.payload.decode())
         st.session_state.latest_value = value
-        log(f"📩 Message received on {msg.topic}: {value}")
+        log(f"📩 on_message: {msg.topic} = {value}")
         log_to_csv("ZoneA", "Pressure", value)
     except Exception as e:
-        log(f"⚠️ Failed to parse message: {e}")
+        log(f"⚠️ on_message error: {e}")
 
+# ---------- MQTT Thread ----------
 def start_mqtt():
     cfg = st.session_state.config
-    client = mqtt.Client()
-    client.enable_logger()  # enable paho internal debug logs
-
-    if cfg["username"]:
-        client.username_pw_set(cfg["username"], cfg["password"])
-        log(f"🔑 Using username: {cfg['username']}")
-
-    if cfg["use_tls"]:
-        cert_path = os.path.join(os.path.dirname(__file__), "baltimore.pem")
-        log(f"🔐 Using TLS with cert: {cert_path}")
-        client.tls_set(ca_certs=cert_path)
-
-    client.on_connect = on_connect
-    client.on_message = on_message
-
     try:
-        log(f"🔌 Connecting to {cfg['broker']}:{cfg['port']} ...")
+        client = mqtt.Client()
+        client.enable_logger()  # enable internal paho logs
+
+        if cfg["username"]:
+            client.username_pw_set(cfg["username"], cfg["password"])
+            log(f"🔑 Using username '{cfg['username']}'")
+
+        if cfg["use_tls"]:
+            cert_path = os.path.join(os.path.dirname(__file__), "baltimore.pem")
+            log(f"🔐 Using TLS cert: {cert_path}")
+            client.tls_set(ca_certs=cert_path)
+
+        client.on_connect = on_connect
+        client.on_disconnect = on_disconnect
+        client.on_message = on_message
+
+        log(f"🔌 Attempting connect to {cfg['broker']}:{cfg['port']}")
         client.connect(cfg["broker"], cfg["port"], 60)
         client.loop_forever()
+
     except Exception as e:
-        log(f"❌ Connection failed: {e}")
+        log(f"💥 start_mqtt exception: {e}")
         st.session_state.connected = False
 
 def ensure_mqtt_running():
@@ -124,7 +132,7 @@ else:
     st.warning("Not connected")
 
 if st.session_state.mqtt_logs:
-    st.text_area("MQTT Debug Log", "\n".join(st.session_state.mqtt_logs), height=200)
+    st.text_area("MQTT Debug Log", "\n".join(st.session_state.mqtt_logs), height=250)
 
 # Gauge
 fig = go.Figure(go.Indicator(
