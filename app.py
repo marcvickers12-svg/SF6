@@ -1,121 +1,146 @@
 import streamlit as st
 import paho.mqtt.client as mqtt
-import threading, os
+import ssl
+import threading
+import time
+import pandas as pd
+import plotly.graph_objects as go
 
-# --------------------------
-# Global safe log store (thread-safe)
-# --------------------------
-log_buffer = []
-log_lock = threading.Lock()
-
-def log(msg: str):
-    """Thread-safe logging (only touches global buffer)."""
-    global log_buffer
-    with log_lock:
-        log_buffer.append(msg)
-    print(msg)
-
-# --------------------------
-# Session state init
-# --------------------------
-if "mqtt_logs" not in st.session_state:
-    st.session_state.mqtt_logs = []
-if "connected" not in st.session_state:
-    st.session_state.connected = False
-if "mqtt_client" not in st.session_state:
-    st.session_state.mqtt_client = None
+# ------------------------------
+# Initialize session state
+# ------------------------------
 if "config" not in st.session_state:
     st.session_state.config = {
-        "broker": "",
+        "broker": "988df3573bd749bf8e37087a285287d0.s1.eu.hivemq.cloud",
         "port": 8883,
-        "username": "",
-        "password": "",
-        "topic": "sf6/test",
-        "use_tls": True,
+        "topic": "sf6/pressure",
+        "username": "Elimpus",  # replace with your HiveMQ username
+        "password": "YOUR_PASSWORD",  # replace with your HiveMQ password
+        "tls_cert": "baltimore.pem",  # must be in repo
     }
 
-# --------------------------
-# MQTT callbacks
-# --------------------------
-def on_connect(client, userdata, flags, rc):
-    if rc == 0:
-        log("✅ Connected to broker")
-        topic = st.session_state.config["topic"]
-        client.subscribe(topic)
-        log(f"📡 Subscribed to topic: {topic}")
-        st.session_state.connected = True
-    else:
-        log(f"❌ Failed to connect. Return code: {rc} "
-            "(5 = unauthorized / bad username or password)")
+if "mqtt_logs" not in st.session_state:
+    st.session_state.mqtt_logs = []
 
-def on_disconnect(client, userdata, rc):
-    log("🔌 Disconnected from broker")
+if "connected" not in st.session_state:
     st.session_state.connected = False
 
-def on_message(client, userdata, msg):
-    log(f"📥 Message received on {msg.topic}: {msg.payload.decode()}")
+if "latest_value" not in st.session_state:
+    st.session_state.latest_value = 0.0
 
-# --------------------------
-# MQTT worker
-# --------------------------
-def start_mqtt(config):
+if "history" not in st.session_state:
+    st.session_state.history = pd.DataFrame(columns=["time", "value"])
+
+# ------------------------------
+# Logging helper
+# ------------------------------
+def log(msg):
+    print(msg)  # goes to console
+    st.session_state.mqtt_logs.append(msg)
+
+# ------------------------------
+# MQTT Callbacks
+# ------------------------------
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        log("✅ Connected to broker!")
+        st.session_state.connected = True
+        client.subscribe(st.session_state.config["topic"])
+        log(f"📡 Subscribed to {st.session_state.config['topic']}")
+    else:
+        log(f"❌ Connection failed with code {rc}")
+
+def on_message(client, userdata, msg):
     try:
-        client = mqtt.Client()
-        if config["username"]:
-            client.username_pw_set(config["username"], config["password"])
-            log(f"🔑 Using username '{config['username']}'")
-        if config["use_tls"]:
-            cert_path = os.path.join(os.path.dirname(__file__), "baltimore.pem")
-            client.tls_set(ca_certs=cert_path)
-            log(f"🔐 Using TLS cert: {cert_path}")
+        payload = float(msg.payload.decode())
+        st.session_state.latest_value = payload
+        new_row = pd.DataFrame([{
+            "time": pd.Timestamp.now(),
+            "value": payload
+        }])
+        st.session_state.history = pd.concat(
+            [st.session_state.history, new_row], ignore_index=True
+        )
+        log(f"📥 Message received: {payload}")
+    except Exception as e:
+        log(f"⚠️ Error parsing message: {e}")
+
+# ------------------------------
+# MQTT Thread Function
+# ------------------------------
+def start_mqtt():
+    cfg = st.session_state.config
+    try:
+        client = mqtt.Client(protocol=mqtt.MQTTv311)
+        client.username_pw_set(cfg["username"], cfg["password"])
+
+        log(f"🔑 Using username '{cfg['username']}'")
+        log(f"📜 Using TLS cert: {cfg['tls_cert']}")
+
+        client.tls_set(
+            ca_certs=cfg["tls_cert"],
+            certfile=None,
+            keyfile=None,
+            cert_reqs=ssl.CERT_REQUIRED,
+            tls_version=ssl.PROTOCOL_TLSv1_2,
+            ciphers=None,
+        )
 
         client.on_connect = on_connect
-        client.on_disconnect = on_disconnect
         client.on_message = on_message
 
-        log(f"🔌 Attempting connect to {config['broker']}:{config['port']}")
-        client.connect(config["broker"], config["port"], 60)
+        log(f"🔌 Attempting connect to {cfg['broker']}:{cfg['port']}")
+        client.connect(cfg["broker"], cfg["port"], 60)
+        log("⏳ Waiting for broker response...")
+
         client.loop_forever()
     except Exception as e:
-        log(f"💥 start_mqtt exception: {e}")
+        log(f"💥 start_mqtt exception: {type(e).__name__}: {e}")
 
-def ensure_mqtt_running(config):
-    if st.session_state.mqtt_client is None:
-        t = threading.Thread(target=start_mqtt, args=(config,), daemon=True)
-        t.start()
-        st.session_state.mqtt_client = t
-        log("🚀 MQTT thread started")
-
-# --------------------------
-# Streamlit UI
-# --------------------------
+# ------------------------------
+# UI Layout
+# ------------------------------
 st.title("SF₆ Gas Monitoring (HiveMQ Cloud Debug Mode)")
 
-with st.sidebar:
-    st.subheader("MQTT Settings")
-    st.session_state.config["broker"] = st.text_input("Broker", st.session_state.config["broker"])
-    st.session_state.config["port"] = st.number_input("Port", 0, 65535, st.session_state.config["port"])
-    st.session_state.config["username"] = st.text_input("Username", st.session_state.config["username"])
-    st.session_state.config["password"] = st.text_input("Password", st.session_state.config["password"], type="password")
-    st.session_state.config["topic"] = st.text_input("Topic", st.session_state.config["topic"])
-    st.session_state.config["use_tls"] = st.checkbox("Use TLS/SSL", st.session_state.config["use_tls"])
+# Connection status
+if st.session_state.connected:
+    st.success("Connected to MQTT broker")
+else:
+    st.warning("Not connected")
 
-    if st.button("Connect"):
-        ensure_mqtt_running(st.session_state.config)
-
-# --------------------------
-# Sync global logs into session state
-# --------------------------
-with log_lock:
-    if log_buffer:
-        st.session_state.mqtt_logs.extend(log_buffer)
-        log_buffer.clear()
-
-# --------------------------
-# Status + Debug Log
-# --------------------------
-status = "✅ Connected" if st.session_state.connected else "⚠️ Not connected"
-st.info(status)
-
+# Debug log
 st.subheader("MQTT Debug Log")
-st.text_area("Log", value="\n".join(st.session_state.mqtt_logs), height=200)
+st.text_area("Log", "\n".join(st.session_state.mqtt_logs), height=200)
+
+# Gauge display
+st.subheader("Pressure (bar)")
+gauge = go.Figure(
+    go.Indicator(
+        mode="gauge+number",
+        value=st.session_state.latest_value,
+        title={"text": "Gas Pressure"},
+        gauge={
+            "axis": {"range": [0, 10]},
+            "bar": {"color": "blue"},
+            "steps": [
+                {"range": [0, 2], "color": "red"},
+                {"range": [2, 4], "color": "yellow"},
+                {"range": [4, 8], "color": "green"},
+                {"range": [8, 10], "color": "orange"},
+            ],
+        },
+    )
+)
+st.plotly_chart(gauge, use_container_width=True)
+
+# Historical chart
+st.subheader("History")
+st.line_chart(st.session_state.history, x="time", y="value")
+
+# ------------------------------
+# Start MQTT Thread (only once)
+# ------------------------------
+if "mqtt_thread_started" not in st.session_state:
+    st.session_state.mqtt_thread_started = True
+    threading.Thread(target=start_mqtt, daemon=True).start()
+    log("🚀 MQTT thread started")
