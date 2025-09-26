@@ -6,6 +6,9 @@ import plotly.graph_objects as go
 import os
 import sys
 
+# ---------- Globals for logs ----------
+mqtt_logs_global = []  # keep logs outside session_state
+
 # ---------- Session State ----------
 if "mqtt_client" not in st.session_state:
     st.session_state.mqtt_client = None
@@ -13,8 +16,6 @@ if "latest_value" not in st.session_state:
     st.session_state.latest_value = 0.0
 if "connected" not in st.session_state:
     st.session_state.connected = False
-if "mqtt_logs" not in st.session_state:
-    st.session_state.mqtt_logs = []
 if "config" not in st.session_state:
     st.session_state.config = {
         "broker": "broker.hivemq.com",
@@ -27,8 +28,8 @@ if "config" not in st.session_state:
 
 # ---------- Logging Helper ----------
 def log(msg):
-    print(msg, file=sys.stderr)  # logs also show in console
-    st.session_state.mqtt_logs.append(msg)
+    print(msg, file=sys.stderr)  # also prints to terminal
+    mqtt_logs_global.append(msg)
 
 # ---------- MQTT Callbacks ----------
 def on_connect(client, userdata, flags, rc):
@@ -130,8 +131,8 @@ if st.session_state.connected:
 else:
     st.warning("Not connected")
 
-if st.session_state.mqtt_logs:
-    st.text_area("MQTT Debug Log", "\n".join(st.session_state.mqtt_logs), height=250)
+if mqtt_logs_global:
+    st.text_area("MQTT Debug Log", "\n".join(mqtt_logs_global[-50:]), height=250)
 
 # Gauge
 fig = go.Figure(go.Indicator(
@@ -148,4 +149,3 @@ fig = go.Figure(go.Indicator(
            ]}
 ))
 st.plotly_chart(fig, use_container_width=True)
-
