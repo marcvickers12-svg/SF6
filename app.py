@@ -7,50 +7,49 @@ import plotly.graph_objects as go
 from queue import Queue
 
 # ------------------------------
-# Thread-safe log queue
+# Global thread-safe log queue
 # ------------------------------
-if "log_queue" not in st.session_state:
-    st.session_state.log_queue = Queue()
+LOG_QUEUE = Queue()
 
-if "mqtt_logs" not in st.session_state:
-    st.session_state.mqtt_logs = []
-
-if "connected" not in st.session_state:
-    st.session_state.connected = False
-
-if "latest_value" not in st.session_state:
-    st.session_state.latest_value = 0.0
-
-if "history" not in st.session_state:
-    st.session_state.history = pd.DataFrame(columns=["time", "value"])
-
-if "config" not in st.session_state:
-    st.session_state.config = {
+# ------------------------------
+# Initialize session state
+# ------------------------------
+defaults = {
+    "mqtt_logs": [],
+    "connected": False,
+    "latest_value": 0.0,
+    "history": pd.DataFrame(columns=["time", "value"]),
+    "config": {
         "broker": "988df3573bd749bf8e37087a285287d0.s1.eu.hivemq.cloud",
         "port": 8883,
         "topic": "sf6/pressure",
         "username": "",
         "password": "",
         "tls_cert": "baltimore.pem",
-    }
+    },
+}
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
 
-# Avoid Altair empty DF warnings
+# Seed history to avoid Altair warnings
 if st.session_state.history.empty:
-    st.session_state.history = pd.DataFrame([{"time": pd.Timestamp.now(), "value": 0.0}])
-
+    st.session_state.history = pd.DataFrame(
+        [{"time": pd.Timestamp.now(), "value": 0.0}]
+    )
 
 # ------------------------------
-# Logging helper (thread safe)
+# Logging helpers
 # ------------------------------
-def log(msg):
-    """Put log message in queue (safe for threads)."""
-    st.session_state.log_queue.put(msg)
+def log(msg: str):
+    """Push message into global log queue (safe across threads)."""
+    LOG_QUEUE.put(msg)
 
 
 def flush_logs():
-    """Move logs from queue into session_state (main thread)."""
-    while not st.session_state.log_queue.empty():
-        msg = st.session_state.log_queue.get()
+    """Flush messages from global queue into Streamlit session state."""
+    while not LOG_QUEUE.empty():
+        msg = LOG_QUEUE.get()
         st.session_state.mqtt_logs.append(msg)
 
 
@@ -71,10 +70,9 @@ def on_message(client, userdata, msg):
     try:
         payload = float(msg.payload.decode())
         st.session_state.latest_value = payload
-        new_row = pd.DataFrame([{
-            "time": pd.Timestamp.now(),
-            "value": payload
-        }])
+        new_row = pd.DataFrame(
+            [{"time": pd.Timestamp.now(), "value": payload}]
+        )
         st.session_state.history = pd.concat(
             [st.session_state.history, new_row], ignore_index=True
         )
@@ -89,6 +87,7 @@ def on_message(client, userdata, msg):
 def start_mqtt(config):
     try:
         client = mqtt.Client(protocol=mqtt.MQTTv311, userdata=config)
+
         if config["username"]:
             client.username_pw_set(config["username"], config["password"])
             log(f"🔑 Using username '{config['username']}'")
@@ -115,7 +114,7 @@ def start_mqtt(config):
 
 
 # ------------------------------
-# Sidebar: Broker Login Panel
+# Sidebar: MQTT Settings
 # ------------------------------
 st.sidebar.header("🔧 MQTT Settings")
 
@@ -135,11 +134,12 @@ st.session_state.config["password"] = st.sidebar.text_input(
     "Password", st.session_state.config["password"], type="password"
 )
 
-# Reconnect button
 if st.sidebar.button("🔄 Reconnect"):
     st.session_state.connected = False
     cfg_copy = dict(st.session_state.config)  # safe copy for thread
-    threading.Thread(target=start_mqtt, args=(cfg_copy,), daemon=True).start()
+    threading.Thread(
+        target=start_mqtt, args=(cfg_copy,), daemon=True
+    ).start()
     log("🚀 MQTT reconnect triggered")
 
 
@@ -148,7 +148,7 @@ if st.sidebar.button("🔄 Reconnect"):
 # ------------------------------
 st.title("SF₆ Gas Monitoring (HiveMQ Cloud Debug Mode)")
 
-# Flush logs from queue
+# Flush logs into session_state
 flush_logs()
 
 if st.session_state.connected:
