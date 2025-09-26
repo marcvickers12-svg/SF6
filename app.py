@@ -27,7 +27,7 @@ if "config" not in st.session_state:
 
 # ---------- Logging Helper ----------
 def log(msg):
-    print(msg, file=sys.stderr)  # goes to Streamlit console logs
+    print(msg, file=sys.stderr)  # logs also show in console
     st.session_state.mqtt_logs.append(msg)
 
 # ---------- MQTT Callbacks ----------
@@ -35,8 +35,8 @@ def on_connect(client, userdata, flags, rc):
     if rc == 0:
         st.session_state.connected = True
         log("✅ on_connect: Connected successfully")
-        client.subscribe(st.session_state.config["topic"])
-        log(f"📡 Subscribed to {st.session_state.config['topic']}")
+        client.subscribe(userdata["topic"])
+        log(f"📡 Subscribed to {userdata['topic']}")
     else:
         st.session_state.connected = False
         log(f"❌ on_connect: Failed with return code {rc}")
@@ -55,17 +55,16 @@ def on_message(client, userdata, msg):
         log(f"⚠️ on_message error: {e}")
 
 # ---------- MQTT Thread ----------
-def start_mqtt():
-    cfg = st.session_state.config
+def start_mqtt(config):
     try:
-        client = mqtt.Client()
-        client.enable_logger()  # enable internal paho logs
+        client = mqtt.Client(userdata=config)  # pass config into callbacks
+        client.enable_logger()
 
-        if cfg["username"]:
-            client.username_pw_set(cfg["username"], cfg["password"])
-            log(f"🔑 Using username '{cfg['username']}'")
+        if config["username"]:
+            client.username_pw_set(config["username"], config["password"])
+            log(f"🔑 Using username '{config['username']}'")
 
-        if cfg["use_tls"]:
+        if config["use_tls"]:
             cert_path = os.path.join(os.path.dirname(__file__), "baltimore.pem")
             log(f"🔐 Using TLS cert: {cert_path}")
             client.tls_set(ca_certs=cert_path)
@@ -74,17 +73,17 @@ def start_mqtt():
         client.on_disconnect = on_disconnect
         client.on_message = on_message
 
-        log(f"🔌 Attempting connect to {cfg['broker']}:{cfg['port']}")
-        client.connect(cfg["broker"], cfg["port"], 60)
+        log(f"🔌 Attempting connect to {config['broker']}:{config['port']}")
+        client.connect(config["broker"], config["port"], 60)
         client.loop_forever()
 
     except Exception as e:
         log(f"💥 start_mqtt exception: {e}")
         st.session_state.connected = False
 
-def ensure_mqtt_running():
+def ensure_mqtt_running(config):
     if st.session_state.mqtt_client is None:
-        t = threading.Thread(target=start_mqtt, daemon=True)
+        t = threading.Thread(target=start_mqtt, args=(config,), daemon=True)
         t.start()
         st.session_state.mqtt_client = t
         log("🚀 MQTT thread started")
@@ -122,7 +121,7 @@ with st.sidebar:
             "username": username,
             "password": password
         }
-        ensure_mqtt_running()
+        ensure_mqtt_running(st.session_state.config)
         st.success("MQTT client started")
 
 # Show connection status + debug logs
@@ -149,3 +148,4 @@ fig = go.Figure(go.Indicator(
            ]}
 ))
 st.plotly_chart(fig, use_container_width=True)
+
