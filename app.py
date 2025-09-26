@@ -2,7 +2,6 @@ import streamlit as st
 import paho.mqtt.client as mqtt
 import ssl
 import threading
-import time
 import pandas as pd
 import plotly.graph_objects as go
 
@@ -14,9 +13,9 @@ if "config" not in st.session_state:
         "broker": "988df3573bd749bf8e37087a285287d0.s1.eu.hivemq.cloud",
         "port": 8883,
         "topic": "sf6/pressure",
-        "username": "Elimpus",  # replace with your HiveMQ username
-        "password": "YOUR_PASSWORD",  # replace with your HiveMQ password
-        "tls_cert": "baltimore.pem",  # must be in repo
+        "username": "",
+        "password": "",
+        "tls_cert": "baltimore.pem",
     }
 
 if "mqtt_logs" not in st.session_state:
@@ -35,7 +34,7 @@ if "history" not in st.session_state:
 # Logging helper
 # ------------------------------
 def log(msg):
-    print(msg)  # goes to console
+    print(msg)
     st.session_state.mqtt_logs.append(msg)
 
 # ------------------------------
@@ -72,10 +71,9 @@ def start_mqtt():
     cfg = st.session_state.config
     try:
         client = mqtt.Client(protocol=mqtt.MQTTv311)
-        client.username_pw_set(cfg["username"], cfg["password"])
-
-        log(f"🔑 Using username '{cfg['username']}'")
-        log(f"📜 Using TLS cert: {cfg['tls_cert']}")
+        if cfg["username"]:
+            client.username_pw_set(cfg["username"], cfg["password"])
+            log(f"🔑 Using username '{cfg['username']}'")
 
         client.tls_set(
             ca_certs=cfg["tls_cert"],
@@ -98,21 +96,39 @@ def start_mqtt():
         log(f"💥 start_mqtt exception: {type(e).__name__}: {e}")
 
 # ------------------------------
-# UI Layout
+# Sidebar: Broker Login Panel
+# ------------------------------
+st.sidebar.header("🔧 MQTT Settings")
+
+st.session_state.config["broker"] = st.sidebar.text_input(
+    "Broker URL", st.session_state.config["broker"]
+)
+st.session_state.config["port"] = st.sidebar.number_input(
+    "Port", value=st.session_state.config["port"], step=1
+)
+st.session_state.config["topic"] = st.sidebar.text_input(
+    "Topic", st.session_state.config["topic"]
+)
+st.session_state.config["username"] = st.sidebar.text_input(
+    "Username", st.session_state.config["username"]
+)
+st.session_state.config["password"] = st.sidebar.text_input(
+    "Password", st.session_state.config["password"], type="password"
+)
+
+# ------------------------------
+# Main UI
 # ------------------------------
 st.title("SF₆ Gas Monitoring (HiveMQ Cloud Debug Mode)")
 
-# Connection status
 if st.session_state.connected:
     st.success("Connected to MQTT broker")
 else:
     st.warning("Not connected")
 
-# Debug log
 st.subheader("MQTT Debug Log")
 st.text_area("Log", "\n".join(st.session_state.mqtt_logs), height=200)
 
-# Gauge display
 st.subheader("Pressure (bar)")
 gauge = go.Figure(
     go.Indicator(
@@ -133,12 +149,11 @@ gauge = go.Figure(
 )
 st.plotly_chart(gauge, use_container_width=True)
 
-# Historical chart
 st.subheader("History")
 st.line_chart(st.session_state.history, x="time", y="value")
 
 # ------------------------------
-# Start MQTT Thread (only once)
+# Start MQTT Thread once
 # ------------------------------
 if "mqtt_thread_started" not in st.session_state:
     st.session_state.mqtt_thread_started = True
