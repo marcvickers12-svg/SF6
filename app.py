@@ -30,6 +30,10 @@ if "latest_value" not in st.session_state:
 if "history" not in st.session_state:
     st.session_state.history = pd.DataFrame(columns=["time", "value"])
 
+# Prevent Altair "empty dataframe" warnings
+if st.session_state.history.empty:
+    st.session_state.history = pd.DataFrame([{"time": pd.Timestamp.now(), "value": 0.0}])
+
 # ------------------------------
 # Logging helper
 # ------------------------------
@@ -44,8 +48,8 @@ def on_connect(client, userdata, flags, rc):
     if rc == 0:
         log("✅ Connected to broker!")
         st.session_state.connected = True
-        client.subscribe(st.session_state.config["topic"])
-        log(f"📡 Subscribed to {st.session_state.config['topic']}")
+        client.subscribe(userdata["topic"])
+        log(f"📡 Subscribed to {userdata['topic']}")
     else:
         log(f"❌ Connection failed with code {rc}")
 
@@ -67,16 +71,15 @@ def on_message(client, userdata, msg):
 # ------------------------------
 # MQTT Thread Function
 # ------------------------------
-def start_mqtt():
-    cfg = st.session_state.config
+def start_mqtt(config):
     try:
-        client = mqtt.Client(protocol=mqtt.MQTTv311)
-        if cfg["username"]:
-            client.username_pw_set(cfg["username"], cfg["password"])
-            log(f"🔑 Using username '{cfg['username']}'")
+        client = mqtt.Client(protocol=mqtt.MQTTv311, userdata=config)
+        if config["username"]:
+            client.username_pw_set(config["username"], config["password"])
+            log(f"🔑 Using username '{config['username']}'")
 
         client.tls_set(
-            ca_certs=cfg["tls_cert"],
+            ca_certs=config["tls_cert"],
             certfile=None,
             keyfile=None,
             cert_reqs=ssl.CERT_REQUIRED,
@@ -87,8 +90,8 @@ def start_mqtt():
         client.on_connect = on_connect
         client.on_message = on_message
 
-        log(f"🔌 Attempting connect to {cfg['broker']}:{cfg['port']}")
-        client.connect(cfg["broker"], cfg["port"], 60)
+        log(f"🔌 Attempting connect to {config['broker']}:{config['port']}")
+        client.connect(config["broker"], config["port"], 60)
         log("⏳ Waiting for broker response...")
 
         client.loop_forever()
@@ -115,6 +118,13 @@ st.session_state.config["username"] = st.sidebar.text_input(
 st.session_state.config["password"] = st.sidebar.text_input(
     "Password", st.session_state.config["password"], type="password"
 )
+
+# Reconnect button
+if st.sidebar.button("🔄 Reconnect"):
+    st.session_state.connected = False
+    cfg_copy = dict(st.session_state.config)  # safe copy for thread
+    threading.Thread(target=start_mqtt, args=(cfg_copy,), daemon=True).start()
+    log("🚀 MQTT reconnect triggered")
 
 # ------------------------------
 # Main UI
@@ -151,11 +161,3 @@ st.plotly_chart(gauge, use_container_width=True)
 
 st.subheader("History")
 st.line_chart(st.session_state.history, x="time", y="value")
-
-# ------------------------------
-# Start MQTT Thread once
-# ------------------------------
-if "mqtt_thread_started" not in st.session_state:
-    st.session_state.mqtt_thread_started = True
-    threading.Thread(target=start_mqtt, daemon=True).start()
-    log("🚀 MQTT thread started")
