@@ -3,6 +3,20 @@ import paho.mqtt.client as mqtt
 import threading, os
 
 # --------------------------
+# Global safe log store
+# --------------------------
+log_buffer = []
+
+def log(msg: str):
+    """Thread-safe logging that won't crash Streamlit."""
+    global log_buffer
+    log_buffer.append(msg)
+    if "mqtt_logs" not in st.session_state:
+        st.session_state.mqtt_logs = []
+    st.session_state.mqtt_logs.append(msg)
+    print(msg)
+
+# --------------------------
 # Session state init
 # --------------------------
 if "mqtt_logs" not in st.session_state:
@@ -22,18 +36,12 @@ if "config" not in st.session_state:
     }
 
 # --------------------------
-# Helpers
-# --------------------------
-def log(msg: str):
-    st.session_state.mqtt_logs.append(msg)
-    print(msg)
-
-# --------------------------
 # MQTT callbacks
 # --------------------------
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
-        st.session_state.connected = True
+        if "connected" in st.session_state:
+            st.session_state.connected = True
         log("✅ Connected to broker")
         topic = st.session_state.config["topic"]
         client.subscribe(topic)
@@ -43,7 +51,8 @@ def on_connect(client, userdata, flags, rc):
             "(5 = unauthorized / bad username or password)")
 
 def on_disconnect(client, userdata, rc):
-    st.session_state.connected = False
+    if "connected" in st.session_state:
+        st.session_state.connected = False
     log("🔌 Disconnected from broker")
 
 def on_message(client, userdata, msg):
@@ -72,7 +81,8 @@ def start_mqtt(config):
         client.loop_forever()
     except Exception as e:
         log(f"💥 start_mqtt exception: {e}")
-        st.session_state.connected = False
+        if "connected" in st.session_state:
+            st.session_state.connected = False
 
 def ensure_mqtt_running(config):
     if st.session_state.mqtt_client is None:
